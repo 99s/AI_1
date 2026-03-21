@@ -1,0 +1,25 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+langchain-huggingface = "*"
+faiss-cpu = "*"
+pypdf = "*"
+huggingface-hub = "*"
+streamlit = "*"
+unstructured = "*"
+pypandoc = "*"
+spacy = "*"
+langchain = "*"
+langchain-community = "*"
+langchain-text-splitters = "*"
+ebooklib = "*"
+beautifulsoup4 = "*"
+sentence-transformers = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.13"
