@@ -10,6 +10,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.retrievers import BaseRetriever
+from sentence_transformers import CrossEncoder
 
 # ==============================
 # CONFIG
@@ -18,6 +19,7 @@ DATA_PATH = "data/"
 DB_FAISS_PATH = "vectorstore/db_faiss"
 
 EMBEDDINGS = OpenAIEmbeddings(model="text-embedding-3-small")
+cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 # ==============================
 # LLM
@@ -79,24 +81,81 @@ def reciprocal_rank_fusion(results: List[List[Document]], k=60):
     return reranked_results
 
 # ==============================
-# CUSTOM RETRIEVER (RRF)
+# CUSTOM RETRIEVER (FULL SCORING)
 # ==============================
 class RerankRetriever(BaseRetriever):
     db: Any
     rrf_fn: Any
 
     def _get_relevant_documents(self, query: str) -> List[Document]:
-        docs1 = self.db.similarity_search(query, k=5)
+
+        # ------------------------------
+        # 1. Similarity search (with score)
+        # ------------------------------
+        sim_results = self.db.similarity_search_with_score(query, k=5)
+
+        docs1 = []
+        sim_map = {}
+
+        for doc, score in sim_results:
+            key = doc.page_content
+            docs1.append(doc)
+
+            # Convert distance → similarity
+            sim_map[key] = 1 / (1 + score)
+
+        # ------------------------------
+        # 2. MMR search
+        # ------------------------------
         docs2 = self.db.max_marginal_relevance_search(query, k=5, fetch_k=10)
 
-        reranked = self.rrf_fn([docs1, docs2])
+        # ------------------------------
+        # 3. RRF
+        # ------------------------------
+        rrf_results = self.rrf_fn([docs1, docs2])
 
+        rrf_map = {doc.page_content: score for doc, score in rrf_results}
+
+        # ------------------------------
+        # 4. Cross Encoder
+        # ------------------------------
+        pairs = [(query, doc.page_content) for doc, _ in rrf_results]
+        ce_scores = cross_encoder.predict(pairs)
+
+        # ------------------------------
+        # 5. Combine scores
+        # ------------------------------
         final_docs = []
-        for doc, score in reranked[:3]:
-            doc.metadata["score"] = score
+
+        for (doc, _), ce_score in zip(rrf_results, ce_scores):
+
+            key = doc.page_content
+
+            sim = sim_map.get(key, 0.0)
+            rrf = rrf_map.get(key, 0.0)
+            ce = float(ce_score)
+
+            # Final weighted score
+            final = (
+                0.4 * sim +
+                0.3 * rrf +
+                0.3 * ce
+            )
+
+            doc.metadata["sim_score"] = sim
+            doc.metadata["rrf_score"] = rrf
+            doc.metadata["ce_score"] = ce
+            doc.metadata["final_score"] = final
+
             final_docs.append(doc)
 
-        return final_docs
+        # Sort by final score
+        final_docs.sort(
+            key=lambda d: d.metadata["final_score"],
+            reverse=True
+        )
+
+        return final_docs[:3]
 
 # ==============================
 # PROMPT
@@ -123,6 +182,32 @@ Answer:
         template=template,
         input_variables=["context", "question"]
     )
+
+# ==============================
+# FORMAT DOCS
+# ==============================
+def format_docs(docs):
+    if not docs:
+        return "NO_CONTEXT"
+
+    formatted = []
+
+    for i, doc in enumerate(docs, 1):
+        sim = doc.metadata.get("sim_score", 0.0)
+        rrf = doc.metadata.get("rrf_score", 0.0)
+        ce = doc.metadata.get("ce_score", 0.0)
+        final = doc.metadata.get("final_score", 0.0)
+
+        content = doc.page_content[:500]
+
+        formatted.append(
+            f"[Doc {i}]\n"
+            f"Final: {final:.4f} | Sim: {sim:.4f} | RRF: {rrf:.4f} | CE: {ce:.4f}\n"
+            f"{content}"
+        )
+
+    return "\n\n".join(formatted)
+
 # ==============================
 # CREATE CHAIN
 # ==============================
@@ -131,27 +216,10 @@ def create_chain():
     llm = load_llm()
     prompt = get_prompt()
 
-    # Create RRF retriever
     retriever = RerankRetriever(
         db=db,
         rrf_fn=reciprocal_rank_fusion
     )
-
-    # Format docs + include scores
-    def format_docs(docs):
-        if not docs:
-            return "NO_CONTEXT"
-
-        formatted = []
-        for doc in docs:
-            score = doc.metadata.get("score", 0)
-            content = doc.page_content[:500]
-
-            formatted.append(
-                f"[Score: {score:.4f}]\n{content}"
-            )
-
-        return "\n\n".join(formatted)
 
     chain = (
         {
