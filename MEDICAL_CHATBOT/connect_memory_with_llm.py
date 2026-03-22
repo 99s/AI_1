@@ -17,13 +17,15 @@ from langchain.chains import create_retrieval_chain
 # 1. Setup LLM
 # -------------------------------
 HF_TOKEN = os.environ.get("HF_TOKEN")
-huggingface_repo_id = "mistralai/Mistral-7B-Instruct-v0.3"
+# huggingface_repo_id = "mistralai/Mistral-7B-Instruct-v0.3"
+# //RedHatAI/Meta-Llama-3.1-405B-Instruct-quantized.w4a16
+# meta-llama/Llama-3.1-405B-Instruct
+huggingface_repo_id = "meta-llama/Llama-3.1-405B-Instruct"
 
 
 def load_llm():
     llm = HuggingFaceEndpoint(
         repo_id=huggingface_repo_id,
-        temperature=0.5,
         huggingfacehub_api_token=HF_TOKEN,
         max_new_tokens=512
     )
@@ -35,7 +37,7 @@ def load_llm():
 # -------------------------------
 def load_vectorstore():
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+        model_name="sentence-transformers/all-MiniLM-L6-v2" #//model2 : used to convrt text for vectorembedding
     )
 
     db = FAISS.load_local(
