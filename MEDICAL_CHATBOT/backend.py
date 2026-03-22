@@ -105,8 +105,12 @@ def get_prompt():
     template = """
 You are a medical assistant chatbot.
 
-Use ONLY the context below.
-If answer not found, say "I don't know."
+Use the provided context to answer the question.
+
+- If the context contains relevant information, answer using it.
+- You may summarize or rephrase the context.
+- If the context is partially relevant, still try to give a helpful answer.
+- Only say "I don't know" if the context contains absolutely no useful information.
 
 Context:
 {context}
@@ -119,7 +123,6 @@ Answer:
         template=template,
         input_variables=["context", "question"]
     )
-
 # ==============================
 # CREATE CHAIN
 # ==============================
