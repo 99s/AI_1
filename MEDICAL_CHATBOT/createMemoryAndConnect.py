@@ -1,5 +1,6 @@
 import os
-from langchain_huggingface import HuggingFaceEndpoint, HuggingFaceEmbeddings
+from transformers import pipeline
+from langchain_huggingface import HuggingFacePipeline, HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -10,106 +11,80 @@ from langchain_core.runnables import RunnablePassthrough
 # ==============================
 # 1. CONFIG
 # ==============================
-HF_TOKEN = os.environ.get("HF_TOKEN")
-
-if not HF_TOKEN:
-    raise ValueError("HF_TOKEN not set. Please set your HuggingFace token.")
-
 DATA_PATH = "data/"
 DB_FAISS_PATH = "vectorstore/db_faiss"
 
-huggingface_repo_id = "mistralai/Mistral-7B-Instruct-v0.3"
+MODEL_ID = "gpt2"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # ==============================
-# 2. LOAD LLM
+# 2. LOAD LLM (LOCAL GPT2)
 # ==============================
 def load_llm():
-    return HuggingFaceEndpoint(
-        repo_id=huggingface_repo_id,
-        temperature=0.5,
-        huggingfacehub_api_token=HF_TOKEN,
-        max_new_tokens=512
+    pipe = pipeline(
+        "text-generation",
+        model=MODEL_ID,
+        max_new_tokens=150,
+        do_sample=True,
+        temperature=0.7
     )
+    return HuggingFacePipeline(pipeline=pipe)
 
 # ==============================
-# 3. LOAD DOCUMENTS
+# 3. LOAD OR CREATE VECTOR DB
 # ==============================
-def load_documents():
-    loader = DirectoryLoader(
-        DATA_PATH,
-        glob="*.pdf",
-        loader_cls=PyPDFLoader
-    )
-    return loader.load()
+def get_vector_db():
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
-# ==============================
-# 4. SPLIT TEXT
-# ==============================
-def split_documents(documents):
+    if os.path.exists(DB_FAISS_PATH):
+        return FAISS.load_local(
+            DB_FAISS_PATH,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
+
+    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyPDFLoader)
+    documents = loader.load()
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50
     )
-    return splitter.split_documents(documents)
-
-# ==============================
-# 5. CREATE VECTOR DB
-# ==============================
-def create_vector_db(texts):
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+    texts = splitter.split_documents(documents)
 
     db = FAISS.from_documents(texts, embeddings)
+
+    os.makedirs(DB_FAISS_PATH, exist_ok=True)
     db.save_local(DB_FAISS_PATH)
+
     return db
 
 # ==============================
-# 6. LOAD VECTOR DB
+# 4. PROMPT
 # ==============================
-def load_vector_db():
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-
-    return FAISS.load_local(
-        DB_FAISS_PATH,
-        embeddings,
-        allow_dangerous_deserialization=True
-    )
-
-# ==============================
-# 7. PROMPT
-# ==============================
-custom_prompt_template = """
-Use the pieces of information provided in the context to answer the user's question.
-If you dont know the answer, just say that you dont know.
-Dont make up answers.
-
+def get_prompt():
+    template = """
 Context:
 {context}
 
-Question:
-{question}
+Question: {question}
 
-Answer:
+Answer briefly:
 """
-
-def set_custom_prompt():
     return PromptTemplate(
-        template=custom_prompt_template,
+        template=template,
         input_variables=["context", "question"]
     )
 
 # ==============================
-# 8. CREATE QA PIPELINE (LCEL)
+# 5. CREATE QA PIPELINE
 # ==============================
 def create_qa_chain(llm, db):
     retriever = db.as_retriever(search_kwargs={"k": 3})
-    prompt = set_custom_prompt()
+    prompt = get_prompt()
 
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+        return "\n\n".join(doc.page_content[:500] for doc in docs)
 
     chain = (
         {
@@ -124,37 +99,39 @@ def create_qa_chain(llm, db):
     return chain
 
 # ==============================
-# 9. MAIN
+# 6. MAIN
 # ==============================
-if __name__ == "__main__":
+def main():
+    print("Initializing system...")
 
-    print("Loading documents...")
-    documents = load_documents()
-
-    print("Splitting documents...")
-    texts = split_documents(documents)
-
-    print("Creating vector DB...")
-    db = create_vector_db(texts)
-
-    # Optional: load instead of recreate
-    # db = load_vector_db()
-
-    print("Loading LLM...")
+    db = get_vector_db()
     llm = load_llm()
-
-    print("Creating QA pipeline...")
     qa_chain = create_qa_chain(llm, db)
 
-    print("\n✅ System Ready! Ask your questions (type 'exit' to quit)\n")
+    print("System Ready! Ask your questions (type 'exit' to quit)")
 
     while True:
-        query = input("Question: ")
+        query = input("Question: ").strip()
 
         if query.lower() == "exit":
             break
 
-        response = qa_chain.invoke(query)
+        if not query:
+            continue
 
-        print("\nAnswer:", response)
-        print("\n" + "-" * 50 + "\n")
+        try:
+            response = qa_chain.invoke(query)
+
+            if not response or response.strip() == "":
+                response = "No answer generated. Check your documents."
+
+            print("Answer:", response)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
+        print("-" * 50)
+
+if __name__ == "__main__":
+    main()

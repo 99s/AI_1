@@ -18,6 +18,9 @@ langchain-text-splitters = "*"
 ebooklib = "*"
 beautifulsoup4 = "*"
 sentence-transformers = "*"
+transformers = "*"
+torch = "*"
+accelerate = "*"
 
 [dev-packages]
 
